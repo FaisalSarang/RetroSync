@@ -111,5 +111,4 @@ Northeastern University Silicon Valley
 
 ---
 
-**Author:** Faisal  
-**Portfolio Project:** Winter 2026
+**Author:** Faisal Riyaz Sarang
