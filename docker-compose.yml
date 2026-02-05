@@ -1,0 +1,231 @@
+version: '3.8'
+
+services:
+  # ==================== INFRASTRUCTURE SERVICES ====================
+  
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: retrosync-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - retrosync-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: retrosync-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - retrosync-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # RabbitMQ Message Queue
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: retrosync-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"      # AMQP protocol
+      - "15672:15672"    # Management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - retrosync-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO Object Storage (S3-compatible)
+  minio:
+    image: minio/minio:latest
+    container_name: retrosync-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "9000:9000"      # API
+      - "9001:9001"      # Web Console
+    volumes:
+      - minio-data:/data
+    networks:
+      - retrosync-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ==================== MONITORING SERVICES ====================
+  
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: retrosync-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - retrosync-network
+    restart: unless-stopped
+
+  # Grafana - Dashboards & Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: retrosync-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clock-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - retrosync-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # ==================== APPLICATION SERVICES ====================
+  # Note: These will be uncommented once we build the services
+  
+  # user-service:
+  #   build:
+  #     context: ./services/user-service
+  #     dockerfile: Dockerfile
+  #   container_name: retrosync-user-service
+  #   environment:
+  #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+  #     SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+  #     SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+  #     SPRING_REDIS_HOST: redis
+  #     JWT_SECRET: ${JWT_SECRET}
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   networks:
+  #     - retrosync-network
+  #   restart: unless-stopped
+
+  # config-service:
+  #   build:
+  #     context: ./services/config-service
+  #     dockerfile: Dockerfile
+  #   container_name: retrosync-config-service
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  #     REDIS_URL: redis://redis:6379
+  #   ports:
+  #     - "8081:8081"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   networks:
+  #     - retrosync-network
+  #   restart: unless-stopped
+
+  # save-service:
+  #   build:
+  #     context: ./services/save-service
+  #     dockerfile: Dockerfile
+  #   container_name: retrosync-save-service
+  #   environment:
+  #     DB_HOST: postgres
+  #     DB_PORT: 5432
+  #     DB_NAME: ${POSTGRES_DB}
+  #     DB_USER: ${POSTGRES_USER}
+  #     DB_PASSWORD: ${POSTGRES_PASSWORD}
+  #     S3_ENDPOINT: http://minio:9000
+  #     S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  #     S3_SECRET_KEY: ${S3_SECRET_KEY}
+  #     S3_BUCKET: ${S3_BUCKET}
+  #   ports:
+  #     - "8082:8082"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     minio:
+  #       condition: service_healthy
+  #   networks:
+  #     - retrosync-network
+  #   restart: unless-stopped
+
+  # sync-service:
+  #   build:
+  #     context: ./services/sync-service
+  #     dockerfile: Dockerfile
+  #   container_name: retrosync-sync-service
+  #   environment:
+  #     REDIS_HOST: redis
+  #     REDIS_PORT: 6379
+  #     RABBITMQ_HOST: rabbitmq
+  #     RABBITMQ_PORT: 5672
+  #     RABBITMQ_USER: ${RABBITMQ_USER}
+  #     RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+  #   ports:
+  #     - "8083:8083"
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   networks:
+  #     - retrosync-network
+  #   restart: unless-stopped
+
+# ==================== NETWORKS ====================
+networks:
+  retrosync-network:
+    driver: bridge
+    name: retrosync-network
+
+# ==================== VOLUMES ====================
+volumes:
+  postgres-data:
+    name: retrosync-postgres-data
+  redis-data:
+    name: retrosync-redis-data
+  rabbitmq-data:
+    name: retrosync-rabbitmq-data
+  minio-data:
+    name: retrosync-minio-data
+  prometheus-data:
+    name: retrosync-prometheus-data
+  grafana-data:
+    name: retrosync-grafana-data
